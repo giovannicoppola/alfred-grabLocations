@@ -31,3 +31,6 @@ Google Maps.
 ## Notes
 
 Personal workflow. Not published to the Alfred gallery.
+
+# Changelog
+- 2026-07-21: version 0.4.1, handle Calendar events with no location, guard unset config, drop empty locations

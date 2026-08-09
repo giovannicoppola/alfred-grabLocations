@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 
 
 MYCAL = os.getenv('MYCALENDAR', '')
-MYDAYS = os.getenv('MYDAYS', '7')
+MYDAYS = os.getenv('MYDAYS') or '7'  # `or` (not getenv default) so a blank config field doesn't break int(MYDAYS)
 MYCALlist = MYCAL.split(",")
 MYCALlist = [x.strip () for x in MYCALlist if x.strip()]
 

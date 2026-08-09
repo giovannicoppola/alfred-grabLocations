@@ -224,7 +224,7 @@ In response to https://www.alfredforum.com/topic/20087-search-for-multiple-addre
 	<key>variablesdontexport</key>
 	<array/>
 	<key>version</key>
-	<string>0.4</string>
+	<string>0.4.1</string>
 	<key>webaddress</key>
 	<string></string>
 </dict>
