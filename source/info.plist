@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>bundleid</key>
-	<string>giovanni-grabLocations</string>
+	<string>com.giovannicoppola.grablocations</string>
 	<key>category</key>
-	<string>myWorkflows</string>
+	<string>Productivity</string>
 	<key>connections</key>
 	<dict>
 		<key>428C7DF1-C616-483A-8D30-7C672715EF44</key>
@@ -36,9 +36,9 @@
 		</array>
 	</dict>
 	<key>createdby</key>
-	<string>giovanni</string>
+	<string>Giovanni</string>
 	<key>description</key>
-	<string>Fetch locations of today's events in Apple Calendar, show them on Google Maps</string>
+	<string>Route your upcoming Apple Calendar event locations in Google Maps</string>
 	<key>disabled</key>
 	<false/>
 	<key>name</key>
@@ -149,9 +149,24 @@ python3 grabLocations.py "$1"</string>
 		</dict>
 	</array>
 	<key>readme</key>
-	<string>Fetch locations of today's events in Apple Calendar, show them on Google Maps
-Set calendar in `Configure Workflow`
-In response to https://www.alfredforum.com/topic/20087-search-for-multiple-address-in-googlemaps-to-make-a-route/</string>
+	<string># grabLocations
+
+Collect the locations of your Apple Calendar events over the next few days and open them as a Google Maps directions route.
+
+## Setup
+- **Calendar**: one or more Calendar names, comma-separated (e.g. `Work, Crew B`)
+- **Days**: how many days ahead to look (default `7`)
+
+On first run macOS asks to let Alfred control Calendar: click **OK**. If you declined, enable it in System Settings › Privacy &amp; Security › Automation › Alfred › Calendar.
+
+Requires Python 3 (`xcode-select --install` if `python3` is missing).
+
+## Usage
+Type `grablocation` to list routes for all upcoming locations (in batches of 10 stops) and one route per calendar. Add a US ZIP code (e.g. `grablocation 02139`) to keep only locations in that ZIP. Press ↩ to open the route in Google Maps.
+
+Repeating events only appear on the date of their first occurrence; this is a limitation of Calendar scripting.
+
+Created in response to https://www.alfredforum.com/topic/20087-search-for-multiple-address-in-googlemaps-to-make-a-route/</string>
 	<key>uidata</key>
 	<dict>
 		<key>428C7DF1-C616-483A-8D30-7C672715EF44</key>
@@ -224,8 +239,8 @@ In response to https://www.alfredforum.com/topic/20087-search-for-multiple-addre
 	<key>variablesdontexport</key>
 	<array/>
 	<key>version</key>
-	<string>0.4.1</string>
+	<string>0.5.0</string>
 	<key>webaddress</key>
-	<string></string>
+	<string>https://github.com/giovannicoppola/alfred-grabLocations</string>
 </dict>
 </plist>

@@ -5,24 +5,28 @@
 
 
 """
-GRAB ICAL MEETING LOCATIONS AND OPEN IN GOOGLE MAPS
+GRAB APPLE CALENDAR EVENT LOCATIONS AND OPEN THEM IN GOOGLE MAPS
 
 """
 
 import os
-from subprocess import check_output
-#import webbrowser
-import sys
 import re
+import sys
 import json
+import subprocess
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 
 
+MAX_STOPS = 10  # Google Maps directions take at most 10 stops
 
 MYCAL = os.getenv('MYCALENDAR', '')
 MYDAYS = os.getenv('MYDAYS') or '7'  # `or` (not getenv default) so a blank config field doesn't break int(MYDAYS)
-MYCALlist = MYCAL.split(",")
-MYCALlist = [x.strip () for x in MYCALlist if x.strip()]
+MYCALlist = [x.strip() for x in MYCAL.split(",") if x.strip()]
+
+# ASCII unit/record separators: never found in event locations or calendar names
+FIELD_SEP = '\x1f'
+RECORD_SEP = '\x1e'
 
 
 def log(s, *args):
@@ -37,8 +41,7 @@ def contains_zipcode(address):
     return bool(match)
 
 
-
-def getDate (deltaDays):
+def getDate(deltaDays):
     # Calculate the date N days from today
     future_date = datetime.now() + timedelta(days=deltaDays)
 
@@ -46,245 +49,148 @@ def getDate (deltaDays):
     formatted_date = future_date.strftime('%A, %B %d, %Y')
     return formatted_date
 
+
 def makeFinalString(currSubset):
-    subsetR = "/".join(currSubset)
-    subsetR = ' '.join (subsetR.split ())
-    subsetR = subsetR.replace('\n', ' ')
-
-    # Replace all spaces with '+'    
-    subsetR = subsetR.replace(' ', '+')
-    
-    if subsetR.endswith ("+"):
-        subsetR = subsetR.rstrip('+')
-    
-    finalString = f"https://www.google.com/maps/dir/{subsetR}"
-    return finalString
-    
+    # Each stop is one path segment: collapse whitespace (locations often span
+    # several lines), drop '/' so it can't split a stop, then URL-encode so
+    # characters like '#', '?' and '&' don't truncate the URL
+    stops = [quote_plus(' '.join(loc.replace('/', ' ').split())) for loc in currSubset]
+    return "https://www.google.com/maps/dir/" + "/".join(stops)
 
 
-myARG = sys.argv[1]
-myZIP = contains_zipcode (myARG)
-MY_OUTPUT = {"items": []}
+def makeItem(title, subtitle="", arg="", valid=True, icon=""):
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "valid": valid,
+        "icon": {"path": icon} if icon else {},
+        "arg": arg,
+    }
+
+
+def output(items):
+    print(json.dumps({"items": items}))
+
+
+def unique(locations):
+    # De-duplicate, keeping the first (chronological) occurrence
+    return list(dict.fromkeys(loc for loc in locations if loc))
 
 
 scpt = '''
 on run {myCalendars, myDays}
-    set eventInfoList to {}
-    set todayDate to (current date) - ((time of (current date)) mod days)
-    set futureDate to todayDate + (myDays * days) -- Add myDays days to get the future date
+    set todayDate to (current date) - (time of (current date))
+    set endDate to todayDate + ((myDays as integer) + 1) * days -- through the end of day myDays
+    set fieldSep to character id 31
+    set recordSep to character id 30
     set AppleScript's text item delimiters to ","
     set calendarList to every text item of myCalendars
     set AppleScript's text item delimiters to {""} -- Reset delimiters
+    set resultText to ""
 
     tell application "Calendar"
-        repeat with myCalendar in calendarList
-            set theCalendar to calendar myCalendar
-            set theEvents to every event of theCalendar
+        repeat with calName in calendarList
+            set calName to calName as text
+            if not (exists calendar calName) then error "Calendar not found: " & calName number 1001
+            set theCalendar to calendar calName
+            set theEvents to (every event of theCalendar whose start date is greater than or equal to todayDate and start date is less than endDate)
             repeat with theEvent in theEvents
-                set startDate to start date of theEvent
-                set startDate to startDate - ((time of startDate) mod days)
-                if startDate is greater than or equal to todayDate and startDate is less than or equal to futureDate then
-                    set theLoc to location of theEvent
-                    if theLoc is missing value then set theLoc to ""
-                    set eventInfo to {}
-                    set end of eventInfo to theLoc
-                    set end of eventInfo to name of theCalendar
-                    set end of eventInfoList to eventInfo
-                end if
+                set theLoc to location of theEvent
+                if theLoc is missing value then set theLoc to ""
+                set startOffset to (start date of theEvent) - todayDate
+                set resultText to resultText & startOffset & fieldSep & theLoc & fieldSep & (name of theCalendar) & recordSep
             end repeat
         end repeat
     end tell
 
-    set AppleScript's text item delimiters to ":::"
-    set eventInfoList to eventInfoList as text
-    set AppleScript's text item delimiters to ""
-    return eventInfoList
+    return resultText
 end run
-
 '''
 
-calendarString = ",".join(MYCALlist) #passing the list of calendars as a list
-command = ['osascript', '-e', scpt, calendarString, str(MYDAYS)]
-#p = Popen(command, stdout=PIPE, stderr=PIPE, universal_newlines=True)
 
-output = check_output(command).decode('utf-8').strip()
-myResults = output.split(":::")
-#log (myResults)
-
-
-resultDict = []
-for i in range(0, len(myResults) - 1, 2):
-    item = {'location': myResults[i], 'calendar': myResults[i+1]}
-    resultDict.append(item)
+def calendarError(stderr):
+    log(stderr)
+    if "-1743" in stderr:
+        return makeItem("Alfred is not allowed to control Calendar ⚠️",
+                        "Enable it in System Settings › Privacy & Security › Automation", valid=False)
+    match = re.search(r"execution error: (.*) \(-?\d+\)", stderr)
+    message = match.group(1) if match else stderr.strip()
+    return makeItem(f"{message} ⚠️", "Check the calendar names in the workflow configuration", valid=False)
 
 
-allEvents = [add for add in resultDict if myARG in add['location']]
-allAdresses = list(set([add['location'] for add in allEvents ]))
-log (allAdresses)
-allAdresses = [x for x in allAdresses if x]
+def getEvents(calendars, days):
+    command = ['osascript', '-e', scpt, ",".join(calendars), str(days)]
+    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8')
+    if result.returncode != 0:
+        return None, calendarError(result.stderr)
 
-if len (allAdresses) > 10:
-    nSplits = int(len (allAdresses) / 10) + 1
-else:
-    nSplits = 1
+    events = []
+    for record in result.stdout.rstrip('\n').split(RECORD_SEP):
+        fields = record.split(FIELD_SEP)
+        if len(fields) != 3:
+            continue
+        events.append({'start': float(fields[0]), 'location': fields[1], 'calendar': fields[2]})
+    events.sort(key=lambda e: e['start'])
+    return events, None
 
-#log (nSplits)
-if myARG == '':
-    ZIPs = "All"
-else:
-    ZIPs = myARG
 
-myFutDate = getDate(int(MYDAYS))
+def main():
+    myARG = sys.argv[1].strip() if len(sys.argv) > 1 else ''
 
-if myZIP or myARG == '':
-    for mySplit in range (0,nSplits):
-        startRec = mySplit*10
-        if mySplit == nSplits-1:
-            endRec = len(allAdresses)
+    if not MYCALlist:
+        output([makeItem("No calendar configured ⚠️",
+                         "Set one or more calendar names in the workflow configuration", valid=False)])
+        return
+
+    try:
+        nDays = int(MYDAYS)
+    except ValueError:
+        output([makeItem(f"Invalid number of days: '{MYDAYS}' ⚠️",
+                         "Set Days to a whole number in the workflow configuration", valid=False)])
+        return
+
+    if myARG and not contains_zipcode(myARG):
+        output([makeItem("Enter a valid ZIP code ⚠️", "Or leave empty to show all locations", valid=False)])
+        return
+
+    events, error = getEvents(MYCALlist, nDays)
+    if error:
+        output([error])
+        return
+
+    myFutDate = getDate(nDays)
+    ZIPs = myARG or "All"
+
+    allEvents = [e for e in events if myARG in e['location']]
+    allAdresses = unique(e['location'] for e in allEvents)
+    log(allAdresses)
+
+    if not allAdresses:
+        output([makeItem(f"No event locations found until {myFutDate}",
+                         f"ZIP code: {ZIPs}", valid=False)])
+        return
+
+    items = []
+    for startRec in range(0, len(allAdresses), MAX_STOPS):
+        currSubset = allAdresses[startRec:startRec + MAX_STOPS]
+        endRec = startRec + len(currSubset)
+        log(f"{startRec}-{endRec}: {currSubset}")
+        items.append(makeItem(f"All crews: ({startRec+1}-{endRec}) until {myFutDate}",
+                              f"ZIP code: {ZIPs}", makeFinalString(currSubset)))
+
+    for myCurrCal in MYCALlist:
+        crewAdresses = unique(e['location'] for e in allEvents
+                              if e['calendar'].casefold() == myCurrCal.casefold())
+        if crewAdresses:
+            items.append(makeItem(f"{myCurrCal} – Locations until {myFutDate}: {len(crewAdresses)}",
+                                  "↩️ to open in Google Maps", makeFinalString(crewAdresses),
+                                  icon="icons/crew.png"))
         else:
-            endRec = startRec+10
-        
-        
-        currSubset = allAdresses[startRec:endRec]
-        log (f"{startRec}-{endRec}: {currSubset}")
+            items.append(makeItem(f"{myCurrCal} – no locations until {myFutDate}",
+                                  f"ZIP code: {ZIPs}", valid=False, icon="icons/crew.png"))
 
-        finalString = makeFinalString (currSubset)
-
-        MY_OUTPUT["items"].append({
-                            "title": f"All crews: ({startRec+1}-{endRec}) until {myFutDate}",
-                            'subtitle': f"ZIP code: {ZIPs}",
-                            'valid': True,
-                            
-                            
-                            "icon": {
-                                
-                            },
-                            'arg': finalString
-                                }) 
-                            #webbrowser.open_new_tab(finalString)
-    for myCurrCal in MYCALlist:
-        currCrew = [add for add in allEvents if add['calendar'] == myCurrCal]
-        allAdresses = list(set([add['location'] for add in currCrew if add['location']]))
-        finalString = makeFinalString (allAdresses)
-        MY_OUTPUT["items"].append({
-                        "title": f"{myCurrCal} – Locations until {myFutDate}: {len (allAdresses)}",
-                        'subtitle': "↪️ to open in Google Maps",
-                        'valid': True,
-                        
-                        
-                        "icon": {
-                            'path': "icons/crew.png"
-                        },
-                        'arg': finalString
-                            }) 
-                        #webbrowser.open_new_tab(finalString)
-
-else:
-	#log ("NOPE")
-    MY_OUTPUT["items"].append({
-                        "title": f"Enter a valid ZIP code ⚠️",
-                        'subtitle': "",
-                        'valid': True,
-                        
-                        
-                        "icon": {
-                            
-                        },
-                        'arg': ""
-                            }) 
-                        #webbrowser.open_new_tab(finalString)
+    output(items)
 
 
-
-print (json.dumps(MY_OUTPUT))
-
-
-"""
-scpt = '''
-on run {myCalendar, myDays}
-    set eventLocations to {}
-    set todayDate to (current date) - ((time of (current date)) mod days)
-    set futureDate to todayDate + (myDays * days) -- Add 7 days to get the future date
-
-    tell application "Calendar"
-        set theCalendar to calendar myCalendar
-        set theEvents to every event of theCalendar
-        repeat with theEvent in theEvents
-            set startDate to start date of theEvent
-            set startDate to startDate - ((time of startDate) mod days)
-            if startDate is greater than or equal to todayDate and startDate is less than or equal to futureDate then
-                set the end of eventLocations to (location of theEvent)
-            end if
-        end repeat
-    end tell
-    
-    set AppleScript's text item delimiters to ":::"
-    set eventLocations to eventLocations as text
-    set AppleScript's text item delimiters to ""
-    
-    return eventLocations
-end run
-
-
-
-
-if myZIP or myARG == '':
-    #log ("valid ZIP")
-    for myCurrCal in MYCALlist:
-                args = [myCurrCal.strip(),MYDAYS]
-                p = Popen(['osascript', '-'] + args, stdin=PIPE, stdout=PIPE, stderr=PIPE, universal_newlines=True)
-                stdout, stderr = p.communicate(scpt)
-                myResults = stdout.split(":::")
-                if myResults[-1].endswith('\n'):
-                    myResults[-1] = myResults[-1].rstrip('\n')
-                subsetRS = set([address for address in myResults if myARG in address])
-                subsetRS = [x for x in subsetRS if x]
-                subsetR = "/".join(subsetRS)
-                subsetR = subsetR.replace('\n', ' ')
-            
-                # Replace all spaces with '+'    
-                subsetR = subsetR.replace(' ', '+')
-                
-                if subsetR.endswith ("+"):
-                    subsetR = subsetR.rstrip('+')
-				
-                finalString = f"https://www.google.com/maps/dir/{subsetR}"
-                myFutDate = getDate(int(MYDAYS))
-                
-                
-                MY_OUTPUT["items"].append({
-                        "title": f"{myCurrCal} – Locations until {myFutDate}: {len (subsetRS)}",
-                        'subtitle': "↪️ to open in Google Maps",
-                        'valid': True,
-                        
-                        
-                        "icon": {
-                            
-                        },
-                        'arg': finalString
-                            }) 
-                        #webbrowser.open_new_tab(finalString)
-
-
-else:
-	#log ("NOPE")
-    MY_OUTPUT["items"].append({
-                        "title": f"Enter a valid ZIP code ⚠️",
-                        'subtitle': "",
-                        'valid': True,
-                        
-                        
-                        "icon": {
-                            
-                        },
-                        'arg': ""
-                            }) 
-                        #webbrowser.open_new_tab(finalString)
-
-        
-
-
-print (json.dumps(MY_OUTPUT))
-
-
-"""
+if __name__ == "__main__":
+    main()
