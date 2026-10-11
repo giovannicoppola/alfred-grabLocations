@@ -154,17 +154,15 @@ python3 grabLocations.py "$1"</string>
 Collect the locations of your Apple Calendar events over the next few days and open them as a Google Maps directions route.
 
 ## Setup
-- **Calendar**: one or more Calendar names, comma-separated (e.g. `Work, Crew B`)
+- **Calendar**: one or more Calendar names, comma-separated (e.g. `Work, Family`)
 - **Days**: how many days ahead to look (default `7`)
 
-On first run macOS asks to let Alfred control Calendar: click **OK**. If you declined, enable it in System Settings › Privacy &amp; Security › Automation › Alfred › Calendar.
+Alfred needs **Full Access** to Calendars: System Settings › Privacy &amp; Security › Calendars › Alfred › Full Access. If it is missing, the workflow shows a message; press ↩ on it to open that settings pane.
 
 Requires Python 3 (`xcode-select --install` if `python3` is missing).
 
 ## Usage
-Type `grablocation` to list routes for all upcoming locations (in batches of 10 stops) and one route per calendar. Add a US ZIP code (e.g. `grablocation 02139`) to keep only locations in that ZIP. Press ↩ to open the route in Google Maps.
-
-Repeating events only appear on the date of their first occurrence; this is a limitation of Calendar scripting.
+Type `grablocation` to list a route per calendar, plus a combined route when you list several calendars (routes are split into batches of 10 stops). Add a US ZIP code (e.g. `grablocation 02139`) to keep only locations in that ZIP. Press ↩ to open the route in Google Maps.
 
 Created in response to https://www.alfredforum.com/topic/20087-search-for-multiple-address-in-googlemaps-to-make-a-route/</string>
 	<key>uidata</key>

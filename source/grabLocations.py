@@ -24,9 +24,7 @@ MYCAL = os.getenv('MYCALENDAR', '')
 MYDAYS = os.getenv('MYDAYS') or '7'  # `or` (not getenv default) so a blank config field doesn't break int(MYDAYS)
 MYCALlist = [x.strip() for x in MYCAL.split(",") if x.strip()]
 
-# ASCII unit/record separators: never found in event locations or calendar names
-FIELD_SEP = '\x1f'
-RECORD_SEP = '\x1e'
+CALENDAR_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"
 
 
 def log(s, *args):
@@ -72,65 +70,111 @@ def output(items):
     print(json.dumps({"items": items}))
 
 
+def routeItems(label, addresses, untilDate, subtitle, icon=""):
+    # One item per route of at most MAX_STOPS stops
+    n = len(addresses)
+    items = []
+    for startRec in range(0, n, MAX_STOPS):
+        currSubset = addresses[startRec:startRec + MAX_STOPS]
+        endRec = startRec + len(currSubset)
+        log(f"{label} {startRec}-{endRec}: {currSubset}")
+        if n <= MAX_STOPS:
+            title = f"{label} – {n} location{'s' if n > 1 else ''} until {untilDate}"
+        elif endRec - startRec == 1:
+            title = f"{label} – stop {endRec} of {n} until {untilDate}"
+        else:
+            title = f"{label} – stops {startRec+1}-{endRec} of {n} until {untilDate}"
+        items.append(makeItem(title, subtitle, makeFinalString(currSubset), icon=icon))
+    return items
+
+
 def unique(locations):
     # De-duplicate, keeping the first (chronological) occurrence
     return list(dict.fromkeys(loc for loc in locations if loc))
 
 
-scpt = '''
-on run {myCalendars, myDays}
-    set todayDate to (current date) - (time of (current date))
-    set endDate to todayDate + ((myDays as integer) + 1) * days -- through the end of day myDays
-    set fieldSep to character id 31
-    set recordSep to character id 30
-    set AppleScript's text item delimiters to ","
-    set calendarList to every text item of myCalendars
-    set AppleScript's text item delimiters to {""} -- Reset delimiters
-    set resultText to ""
+# JavaScript for Automation reading events through EventKit: fast on large
+# calendars (no Calendar.app scripting) and expands repeating events
+jxa = '''
+ObjC.import('EventKit');
 
-    tell application "Calendar"
-        repeat with calName in calendarList
-            set calName to calName as text
-            if not (exists calendar calName) then error "Calendar not found: " & calName number 1001
-            set theCalendar to calendar calName
-            set theEvents to (every event of theCalendar whose start date is greater than or equal to todayDate and start date is less than endDate)
-            repeat with theEvent in theEvents
-                set theLoc to location of theEvent
-                if theLoc is missing value then set theLoc to ""
-                set startOffset to (start date of theEvent) - todayDate
-                set resultText to resultText & startOffset & fieldSep & theLoc & fieldSep & (name of theCalendar) & recordSep
-            end repeat
-        end repeat
-    end tell
+function requestAccess(store) {
+    let done = false;
+    const callback = () => { done = true; };
+    if (store.respondsToSelector('requestFullAccessToEventsWithCompletion:')) {
+        store.requestFullAccessToEventsWithCompletion(callback);  // macOS 14+
+    } else {
+        store.requestAccessToEntityTypeCompletion($.EKEntityTypeEvent, callback);
+    }
+    const deadline = $.NSDate.dateWithTimeIntervalSinceNow(60);
+    while (!done && deadline.timeIntervalSinceNow > 0) {
+        $.NSRunLoop.currentRunLoop.runModeBeforeDate($.NSDefaultRunLoopMode, $.NSDate.dateWithTimeIntervalSinceNow(0.2));
+    }
+}
 
-    return resultText
-end run
+function run(argv) {
+    const names = argv[0].split(',');
+    const days = parseInt(argv[1]);
+    let store = $.EKEventStore.alloc.init;
+    // the bridge returns the enum as a string ("3"), so convert before comparing
+    const authStatus = () => Number($.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeEvent));
+
+    // 0 = not determined, 1 = restricted, 2 = denied,
+    // 3 = full access (macOS 14+) / authorized (older), 4 = write only
+    if (authStatus() === 0) {
+        requestAccess(store);
+        store = $.EKEventStore.alloc.init;
+    }
+    const status = authStatus();
+    if (status !== 3) {
+        return JSON.stringify({error: 'notAuthorized', status: status});
+    }
+
+    const wanted = names.map(n => n.toLowerCase());
+    const calendars = ObjC.unwrap(store.calendarsForEntityType($.EKEntityTypeEvent))
+        .filter(c => wanted.includes(ObjC.unwrap(c.title).toLowerCase()));
+    const found = calendars.map(c => ObjC.unwrap(c.title).toLowerCase());
+    const missing = names.filter(n => !found.includes(n.toLowerCase()));
+    if (missing.length) {
+        return JSON.stringify({error: 'notFound', calendars: missing});
+    }
+
+    const start = $.NSCalendar.currentCalendar.startOfDayForDate($.NSDate.date);
+    const end = start.dateByAddingTimeInterval((days + 1) * 86400);  // through the end of day `days`
+    const predicate = store.predicateForEventsWithStartDateEndDateCalendars(start, end, $(calendars));
+    const events = ObjC.unwrap(store.eventsMatchingPredicate(predicate)).map(e => ({
+        start: Number(e.startDate.timeIntervalSince1970),
+        location: ObjC.unwrap(e.location) || '',
+        calendar: ObjC.unwrap(e.calendar.title),
+    }));
+    return JSON.stringify({events: events});
+}
 '''
 
 
-def calendarError(stderr):
-    log(stderr)
-    if "-1743" in stderr:
-        return makeItem("Alfred is not allowed to control Calendar ⚠️",
-                        "Enable it in System Settings › Privacy & Security › Automation", valid=False)
-    match = re.search(r"execution error: (.*) \(-?\d+\)", stderr)
-    message = match.group(1) if match else stderr.strip()
-    return makeItem(f"{message} ⚠️", "Check the calendar names in the workflow configuration", valid=False)
+def calendarError(result):
+    if result.get('error') == 'notAuthorized':
+        return makeItem("Alfred needs Full Access to your Calendars ⚠️",
+                        f"↩ to open Privacy & Security › Calendars, then set Alfred to Full Access (status {result.get('status')})",
+                        CALENDAR_SETTINGS)
+    if result.get('error') == 'notFound':
+        return makeItem(f"Calendar not found: {', '.join(result['calendars'])} ⚠️",
+                        "Check the calendar names in the workflow configuration", valid=False)
+    return makeItem(f"Could not read Calendar: {result.get('error')} ⚠️", valid=False)
 
 
 def getEvents(calendars, days):
-    command = ['osascript', '-e', scpt, ",".join(calendars), str(days)]
-    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8')
-    if result.returncode != 0:
-        return None, calendarError(result.stderr)
+    command = ['osascript', '-l', 'JavaScript', '-e', jxa, ",".join(calendars), str(days)]
+    proc = subprocess.run(command, capture_output=True, text=True, encoding='utf-8')
+    try:
+        result = json.loads(proc.stdout)
+    except ValueError:
+        log(proc.stderr)
+        result = {'error': proc.stderr.strip() or 'no output'}
+    if 'error' in result:
+        return None, calendarError(result)
 
-    events = []
-    for record in result.stdout.rstrip('\n').split(RECORD_SEP):
-        fields = record.split(FIELD_SEP)
-        if len(fields) != 3:
-            continue
-        events.append({'start': float(fields[0]), 'location': fields[1], 'calendar': fields[2]})
-    events.sort(key=lambda e: e['start'])
+    events = sorted(result['events'], key=lambda e: e['start'])
     return events, None
 
 
@@ -170,21 +214,17 @@ def main():
                          f"ZIP code: {ZIPs}", valid=False)])
         return
 
+    subtitle = f"ZIP code: {ZIPs} · ↩ to open in Google Maps"
     items = []
-    for startRec in range(0, len(allAdresses), MAX_STOPS):
-        currSubset = allAdresses[startRec:startRec + MAX_STOPS]
-        endRec = startRec + len(currSubset)
-        log(f"{startRec}-{endRec}: {currSubset}")
-        items.append(makeItem(f"All crews: ({startRec+1}-{endRec}) until {myFutDate}",
-                              f"ZIP code: {ZIPs}", makeFinalString(currSubset)))
+    # The combined route only adds something when there are several calendars
+    if len(MYCALlist) > 1:
+        items += routeItems("All calendars", allAdresses, myFutDate, subtitle)
 
     for myCurrCal in MYCALlist:
-        crewAdresses = unique(e['location'] for e in allEvents
-                              if e['calendar'].casefold() == myCurrCal.casefold())
-        if crewAdresses:
-            items.append(makeItem(f"{myCurrCal} – Locations until {myFutDate}: {len(crewAdresses)}",
-                                  "↩️ to open in Google Maps", makeFinalString(crewAdresses),
-                                  icon="icons/crew.png"))
+        calAdresses = unique(e['location'] for e in allEvents
+                             if e['calendar'].casefold() == myCurrCal.casefold())
+        if calAdresses:
+            items += routeItems(myCurrCal, calAdresses, myFutDate, subtitle, icon="icons/crew.png")
         else:
             items.append(makeItem(f"{myCurrCal} – no locations until {myFutDate}",
                                   f"ZIP code: {ZIPs}", valid=False, icon="icons/crew.png"))
