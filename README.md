@@ -4,6 +4,11 @@ An [Alfred](https://www.alfredapp.com/) workflow to fetch the locations of your
 Apple Calendar events over the next *N* days and open them as a **Google Maps**
 directions route.
 
+<a href="https://github.com/giovannicoppola/alfred-grabLocations/releases/latest/">
+<img alt="Downloads"
+src="https://img.shields.io/github/downloads/giovannicoppola/alfred-grabLocations/total?color=purple&label=Downloads"><br/>
+</a>
+
 Created in response to [this Alfred Forum request](https://www.alfredforum.com/topic/20087-search-for-multiple-address-in-googlemaps-to-make-a-route/).
 
 ## Download
