@@ -13,8 +13,9 @@ Created in response to [this Alfred Forum request](https://www.alfredforum.com/t
 
 ## Download
 
-Get the latest `grabLocations_*.alfredworkflow` from [`releases/`](releases/) and
-double-click it to install.
+Download the latest `grabLocations_*.alfredworkflow` from the
+[releases page](https://github.com/giovannicoppola/alfred-grabLocations/releases/latest)
+and double-click it to install.
 
 ## Requirements
 
